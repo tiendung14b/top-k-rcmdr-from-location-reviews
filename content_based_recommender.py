@@ -3,12 +3,12 @@ import json
 import random
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, normalize
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 import warnings
 
-# Suppress standard sklearn warnings for cleaner output
 warnings.filterwarnings('ignore')
 
 def parse_json_file(filepath):
@@ -30,17 +30,15 @@ def parse_json_file(filepath):
                             data.append(json.loads(line))
                         except json.JSONDecodeError:
                             pass
-    except Exception as e:
+    except Exception:
         pass
     return data
 
 def load_data():
     all_data = []
-    
     file1_path = 'reviews_data.json'
     if os.path.exists(file1_path):
         all_data.extend(parse_json_file(file1_path))
-
     file2_path = 'llm_enriched_reviews.json'
     if os.path.exists(file2_path):
         all_data.extend(parse_json_file(file2_path))
@@ -67,20 +65,22 @@ def load_data():
         
     return df
 
-def custom_train_test_split(df):
+def custom_train_test_split(df, test_ratio=0.2):
     train_list, test_list = [], []
     for loc_id, group in df.groupby('location_id'):
         total_reviews = len(group)
-        if total_reviews == 0:
+        if total_reviews <= 1:
+            # If only 1 review, put it in train so we can build a location profile
+            train_list.append(group)
             continue
             
-        upper_bound = min(20, total_reviews)
-        if upper_bound == total_reviews and total_reviews > 1:
-            upper_bound -= 1 
+        n_test = int(total_reviews * test_ratio)
+        if n_test == 0:
+            n_test = 1 # Guarantee at least 1 test sample if we have >1 reviews
             
-        lower_bound = min(5, upper_bound)
-        n_test = random.randint(lower_bound, upper_bound)
-        
+        if n_test == total_reviews:
+            n_test -= 1 # Guarantee at least 1 train sample
+            
         test_indices = random.sample(list(group.index), n_test)
         
         test_df = group.loc[test_indices]
@@ -105,12 +105,20 @@ def encode_features(train_df, test_df):
     feature_names = []
     
     for col in array_cols:
-        mlb = MultiLabelBinarizer()
-        train_mat = mlb.fit_transform(train_df[col])
-        test_mat = mlb.transform(test_df[col]) 
+        train_strings = train_df[col].apply(lambda x: " ".join([str(item).replace(' ', '_') for item in x]))
+        test_strings = test_df[col].apply(lambda x: " ".join([str(item).replace(' ', '_') for item in x]))
+        
+        tfidf = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b")
+        train_mat = tfidf.fit_transform(train_strings).toarray()
+        test_mat = tfidf.transform(test_strings).toarray()
+        
+        if col in ['activities', 'target_audience']:
+            train_mat *= 2.0
+            test_mat *= 2.0
+            
         train_features.append(train_mat)
         test_features.append(test_mat)
-        feature_names.extend([f"{col}_{c}" for c in mlb.classes_])
+        feature_names.extend([f"{col}_{c}" for c in tfidf.get_feature_names_out()])
         
     ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
     train_str_mat = ohe.fit_transform(train_df[string_cols])
@@ -123,6 +131,9 @@ def encode_features(train_df, test_df):
     X_train = np.hstack(train_features)
     X_test = np.hstack(test_features)
     
+    X_train = normalize(X_train, norm='l2')
+    X_test = normalize(X_test, norm='l2')
+    
     train_encoded = pd.DataFrame(X_train, columns=feature_names, index=train_df.index)
     train_encoded['location_id'] = train_df['location_id']
     
@@ -133,6 +144,10 @@ def encode_features(train_df, test_df):
 
 def build_location_profiles_and_cluster(train_encoded, feature_names):
     location_profiles = train_encoded.groupby('location_id')[feature_names].mean()
+    
+    location_matrix = normalize(location_profiles.values, norm='l2')
+    location_profiles = pd.DataFrame(location_matrix, columns=feature_names, index=location_profiles.index)
+    
     n_locations = len(location_profiles)
     n_clusters = max(2, min(8, n_locations // 2)) if n_locations >= 2 else 1
     
@@ -146,7 +161,6 @@ def build_location_profiles_and_cluster(train_encoded, feature_names):
     return location_profiles
 
 def evaluate_multi_k(test_encoded, location_profiles, feature_names, k_list=[3, 5, 7, 9]):
-    """Evaluate Hit Rate for multiple K values"""
     total = len(test_encoded)
     hits_at_k = {k: 0 for k in k_list}
     
@@ -160,10 +174,8 @@ def evaluate_multi_k(test_encoded, location_profiles, feature_names, k_list=[3, 
         
         sim_scores = cosine_similarity(user_vector, profile_matrix)[0]
         
-        # Sort indices descending
         sorted_indices = np.argsort(sim_scores)[::-1]
         max_k = max(k_list)
-        # Avoid indexing out of bounds if there are fewer locations than max_k
         actual_max_k = min(max_k, len(location_ids))
         top_k_indices = sorted_indices[:actual_max_k]
         top_k_recommendations = [location_ids[i] for i in top_k_indices]
@@ -176,26 +188,22 @@ def evaluate_multi_k(test_encoded, location_profiles, feature_names, k_list=[3, 
     return hit_rates
 
 def main():
-    print("Initializing Recommender Pipeline...")
+    print("Initializing ADVANCED Recommender Pipeline (Proportional Split)...")
     df = load_data()
     if df.empty:
-        print("No valid data loaded. Please check the paths and try again.")
         return
     print(f"Loaded {len(df)} total reviews.")
     
-    train_df, test_df = custom_train_test_split(df)
+    train_df, test_df = custom_train_test_split(df, test_ratio=0.2)
     print(f"Split completed -> Train Set: {len(train_df)}, Test Set: {len(test_df)}")
-    if train_df.empty or test_df.empty:
-        return
         
     train_encoded, test_encoded, feature_names = encode_features(train_df, test_df)
     location_profiles = build_location_profiles_and_cluster(train_encoded, feature_names)
-    print(f"Location Profiles built for {len(location_profiles)} unique locations.")
     
     k_list = [3, 5, 7, 9]
     hit_rates = evaluate_multi_k(test_encoded, location_profiles, feature_names, k_list)
     print(f"\n====================================")
-    print("FINAL EVALUATION RESULTS")
+    print("PROPORTIONAL SPLIT EVALUATION RESULTS")
     for k in k_list:
         print(f"- Hit Rate@{k}: {hit_rates[k]:.2%}")
     print(f"====================================")
