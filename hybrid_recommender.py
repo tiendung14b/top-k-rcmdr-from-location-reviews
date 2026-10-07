@@ -91,7 +91,7 @@ class HybridLocationRecommender:
                 raise ValueError("Không tìm thấy trường 'location_id' hoặc 'location_name'.")
 
         # Xử lý các giá trị missing / null an toàn
-        text_cols = ["highlights", "drawbacks", "practical_tips"]
+        text_cols = ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]
         for col in text_cols:
             if col not in df.columns:
                 df[col] = [[] for _ in range(len(df))]
@@ -160,8 +160,8 @@ class HybridLocationRecommender:
             all_text_snippets = []
 
             for _, row in sub.iterrows():
-                # Lấy text an toàn từ 3 trường mở
-                for field in ["highlights", "drawbacks", "practical_tips"]:
+                # Lấy text an toàn từ các trường mở
+                for field in ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]:
                     val = row.get(field, [])
                     if isinstance(val, list):
                         all_text_snippets.extend([str(item).strip() for item in val if str(item).strip()])
@@ -318,7 +318,7 @@ class HybridLocationRecommender:
         train_dfs = []
         test_dfs = []
         for loc_id, group in df.groupby("location_id"):
-            group = group.sample(frac=1.0, random_state=42)
+            group = group.sample(frac=1.0)
             n_train = max(1, int(len(group) * 0.8))
             train_dfs.append(group.iloc[:n_train])
             test_dfs.append(group.iloc[n_train:])
@@ -348,7 +348,7 @@ class HybridLocationRecommender:
             
             # Xây dựng Query text từ các text mở
             query_parts = []
-            for field in ["highlights", "drawbacks", "practical_tips"]:
+            for field in ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]:
                 val = row.get(field, [])
                 if isinstance(val, list):
                     query_parts.extend([str(x).strip() for x in val if str(x).strip()])
