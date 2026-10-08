@@ -153,6 +153,11 @@ class HybridLocationRecommender:
 
         # Ghép tất cả các feature categorical của từng review
         review_cat_matrix = np.hstack(field_matrices)
+        
+        # Chuẩn hóa L2 trước khi trung bình (tùy chọn nhưng tốt)
+        if review_cat_matrix.shape[1] > 0:
+            review_cat_matrix = normalize(review_cat_matrix, norm="l2")
+            
         df_cat = pd.DataFrame(review_cat_matrix, index=df["location_id"])
 
         # Average Pooling theo từng địa điểm
@@ -160,7 +165,7 @@ class HybridLocationRecommender:
         unique_locs = location_grouped.index.tolist()
         loc_cat_matrix = location_grouped.to_numpy()
 
-        # Chuẩn hóa L2
+        # Chuẩn hóa L2 lại sau khi trung bình
         loc_cat_matrix = normalize(loc_cat_matrix, norm="l2")
         return loc_cat_matrix, unique_locs
 
@@ -169,49 +174,53 @@ class HybridLocationRecommender:
     # =========================================================================
     def _build_text_pca_matrix(self, df: pd.DataFrame, location_order: List[str]) -> np.ndarray:
         """
-        Ghép 'highlights', 'drawbacks', 'practical_tips' thành Location Document,
-        sau đó embed bằng SentenceTransformer và giảm chiều bằng PCA.
+        Embed từng review bằng SentenceTransformer, sau đó tính trung bình theo địa điểm (Average Pooling),
+        và cuối cùng giảm chiều bằng PCA.
         """
-        logger.info("Đang tổng hợp Location Document từ highlights, drawbacks, practical_tips...")
-        location_docs = []
+        logger.info("Đang tổng hợp Text Document cho từng review...")
+        review_docs = []
 
-        for loc_id in location_order:
-            sub = df[df["location_id"] == loc_id]
+        for _, row in df.iterrows():
             all_text_snippets = []
+            for field in ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]:
+                val = row.get(field, [])
+                if isinstance(val, list):
+                    all_text_snippets.extend([str(item).strip() for item in val if str(item).strip()])
+                elif isinstance(val, str) and val.strip():
+                    all_text_snippets.append(val.strip())
 
-            for _, row in sub.iterrows():
-                # Lấy text an toàn từ các trường mở
-                for field in ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]:
-                    val = row.get(field, [])
-                    if isinstance(val, list):
-                        all_text_snippets.extend([str(item).strip() for item in val if str(item).strip()])
-                    elif isinstance(val, str) and val.strip():
-                        all_text_snippets.append(val.strip())
-
-            # Ghép thành 1 văn bản toàn diện cho địa điểm
             if all_text_snippets:
                 combined_doc = ". ".join(all_text_snippets)
             else:
-                # Fallback nếu địa điểm chưa có review text mở
-                loc_name = sub["location_name"].iloc[0] if "location_name" in sub.columns else loc_id
-                combined_doc = f"Popular destination: {loc_name}"
-
-            location_docs.append(combined_doc)
+                combined_doc = "Popular destination"
+            
+            review_docs.append(combined_doc)
 
         logger.info(f"Đang sinh vector nhúng (Embedding) bằng '{self.embedding_model_name}' (384-dim)...")
-        # Embedding 384 chiều
+        # Embedding 384 chiều cho từng review
         embeddings_384 = np.vstack(list(self.sentence_model.embed(
-            location_docs,
-            batch_size=16
+            review_docs,
+            batch_size=32
         )))
 
-        # Giảm chiều bằng PCA xuống n_components=20 (tránh lấn át categorical)
-        n_samples = len(location_docs)
-        actual_components = min(self.pca_components, n_samples - 1 if n_samples > 1 else 1)
+        # Average Pooling theo từng địa điểm
+        df_text = pd.DataFrame(embeddings_384, index=df["location_id"])
+        location_grouped = df_text.groupby(level=0).mean()
         
+        # Đảm bảo thứ tự khớp với location_order
+        loc_text_matrix = location_grouped.reindex(location_order).to_numpy()
+
+        # Giảm chiều bằng PCA
+        n_samples = len(location_order)
+        # Giới hạn số lượng components không vượt quá n_samples hoặc kích thước ma trận
+        actual_components = min(self.pca_components, n_samples - 1 if n_samples > 1 else 1, loc_text_matrix.shape[1])
+        
+        if actual_components < 1:
+            actual_components = 1
+
         logger.info(f"Áp dụng PCA giảm chiều từ 384 -> {actual_components} dimensions...")
         self.pca = PCA(n_components=actual_components, random_state=42)
-        text_pca = self.pca.fit_transform(embeddings_384)
+        text_pca = self.pca.fit_transform(loc_text_matrix)
 
         # Chuẩn hóa L2 cho ma trận text PCA
         text_pca = normalize(text_pca, norm="l2")
@@ -381,7 +390,7 @@ class HybridLocationRecommender:
                 query_text=query_text,
                 user_preferences=user_prefs,
                 top_k=max(ks),
-                cat_weight=3.0,
+                cat_weight=4.0,
                 text_weight=1.0
             )
             
@@ -411,7 +420,7 @@ if __name__ == "__main__":
 
     recommender = HybridLocationRecommender(
         embedding_model_name="all-MiniLM-L6-v2",
-        pca_components=40,
+        pca_components=30,
         n_clusters=8,
     )
     
