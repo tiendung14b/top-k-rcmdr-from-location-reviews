@@ -37,7 +37,7 @@ class HybridLocationRecommender:
     def __init__(
         self,
         embedding_model_name: str = "all-MiniLM-L6-v2",
-        pca_components: int = 20,
+        pca_components: int = 40,
         n_clusters: Optional[int] = None,
     ):
         """
@@ -63,13 +63,19 @@ class HybridLocationRecommender:
         self.cluster_labels: Optional[np.ndarray] = None
 
         # Cấu hình các trường đặc trưng có cấu trúc
-        self.array_fields = ["activities", "target_audience", "vibes", "suitable_for", "amenities"]
+        self.array_fields = [
+            "activities", "target_audience", "value_perception", "dominant_moods",
+            "physical_intensity", "accessibility", "service_quality", "crowd_density"
+        ]
         self.field_weights = {
             "activities": 1.5,
             "target_audience": 1.5,
-            "vibes": 1.2,
-            "suitable_for": 1.0,
-            "amenities": 0.8,
+            "value_perception": 1.2,
+            "dominant_moods": 1.2,
+            "physical_intensity": 1.0,
+            "accessibility": 1.0,
+            "service_quality": 1.0,
+            "crowd_density": 1.0,
         }
 
     # =========================================================================
@@ -116,7 +122,7 @@ class HybridLocationRecommender:
             if col not in df.columns:
                 df[col] = [[] for _ in range(len(df))]
             else:
-                df[col] = df[col].apply(lambda x: x if isinstance(x, list) else [])
+                df[col] = df[col].apply(lambda x: x if isinstance(x, list) else ([x] if isinstance(x, str) and x.strip() else []))
 
         logger.info(f"Đã nạp {len(df)} reviews cho {df['location_id'].nunique()} địa điểm.")
         return df
@@ -265,7 +271,7 @@ class HybridLocationRecommender:
         user_preferences: Optional[Dict[str, List[str]]] = None,
         top_k: int = 5,
         text_weight: float = 1.0,
-        cat_weight: float = 1.0,
+        cat_weight: float = 3.0,
     ) -> List[Dict[str, Any]]:
         """
         Dự đoán và xếp hạng địa điểm dựa trên câu truy vấn tự do và sở thích danh mục.
@@ -371,7 +377,13 @@ class HybridLocationRecommender:
             query_text = ". ".join(query_parts)
             
             # Giả lập gợi ý với User Vector
-            recs = self.recommend(query_text=query_text, user_preferences=user_prefs, top_k=max(ks))
+            recs = self.recommend(
+                query_text=query_text,
+                user_preferences=user_prefs,
+                top_k=max(ks),
+                cat_weight=3.0,
+                text_weight=1.0
+            )
             
             # Kiểm tra Hits
             top_k_locs = [r["location_id"] for r in recs]
@@ -399,8 +411,8 @@ if __name__ == "__main__":
 
     recommender = HybridLocationRecommender(
         embedding_model_name="all-MiniLM-L6-v2",
-        pca_components=20,
-        n_clusters=6,
+        pca_components=40,
+        n_clusters=8,
     )
     
     # Nạp toàn bộ data
