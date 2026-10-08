@@ -46,6 +46,20 @@ def load_data():
     df = pd.DataFrame(all_data)
     if df.empty:
         return df
+        
+    try:
+        import json
+        with open("reviews_data.json", "r", encoding="utf-8-sig") as f:
+            raw_data = json.load(f)
+        loc_type_map = {item.get("locationName", ""): item.get("locationType", "") for item in raw_data if "locationName" in item}
+        map_key = "location_name" if "location_name" in df.columns else "location_id"
+        df["locationType"] = df[map_key].map(loc_type_map)
+        
+        original_len = len(df)
+        df = df[~df["locationType"].astype(str).str.lower().str.contains("restaurant", na=False)]
+        print(f"Đã lọc bỏ {original_len - len(df)} reviews thuộc về restaurant.")
+    except Exception as e:
+        print(f"Không thể lọc nhà hàng: {e}")
 
     array_cols = ['target_audience', 'activities', 'value_perception', 'dominant_moods']
     string_cols = ['physical_intensity', 'accessibility', 'service_quality', 'crowd_density']

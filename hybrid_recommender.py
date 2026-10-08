@@ -82,13 +82,27 @@ class HybridLocationRecommender:
             data = json.load(f)
 
         df = pd.DataFrame(data)
-
+        
         # Đảm bảo có location_id và location_name
         if "location_id" not in df.columns:
             if "location_name" in df.columns:
                 df["location_id"] = df["location_name"]
             else:
                 raise ValueError("Không tìm thấy trường 'location_id' hoặc 'location_name'.")
+
+        # Map locationType từ file gốc để lọc restaurant
+        try:
+            # File gốc chứa locationType
+            with open(filepath.replace("llm_enriched_reviews.json", "reviews_data.json"), "r", encoding="utf-8-sig") as f:
+                raw_data = json.load(f)
+            loc_type_map = {item.get("locationName", ""): item.get("locationType", "") for item in raw_data}
+            df["locationType"] = df["location_name"].map(loc_type_map)
+            
+            original_len = len(df)
+            df = df[~df["locationType"].astype(str).str.lower().str.contains("restaurant", na=False)]
+            logger.info(f"Đã lọc bỏ {original_len - len(df)} reviews thuộc về restaurant.")
+        except Exception as e:
+            logger.warning(f"Không thể map locationType: {e}")
 
         # Xử lý các giá trị missing / null an toàn
         text_cols = ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]
