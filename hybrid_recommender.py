@@ -39,6 +39,7 @@ class HybridLocationRecommender:
         embedding_model_name: str = "all-MiniLM-L6-v2",
         pca_components: int = 40,
         n_clusters: Optional[int] = None,
+        include_extracted_spaces: bool = True,
     ):
         """
         Khởi tạo hệ thống gợi ý lai (Hybrid Recommender).
@@ -46,6 +47,10 @@ class HybridLocationRecommender:
         self.embedding_model_name = embedding_model_name
         self.pca_components = pca_components
         self.n_clusters = n_clusters
+        self.include_extracted_spaces = include_extracted_spaces
+        self.text_fields = ["highlights", "drawbacks", "practical_tips", "extracted_times"]
+        if self.include_extracted_spaces:
+            self.text_fields.append("extracted_spaces")
 
         # Models & Transformers
         self.sentence_model = TextEmbedding(model_name=f"sentence-transformers/{embedding_model_name}")
@@ -182,7 +187,7 @@ class HybridLocationRecommender:
 
         for _, row in df.iterrows():
             all_text_snippets = []
-            for field in ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]:
+            for field in self.text_fields:
                 val = row.get(field, [])
                 if isinstance(val, list):
                     all_text_snippets.extend([str(item).strip() for item in val if str(item).strip()])
@@ -377,7 +382,7 @@ class HybridLocationRecommender:
             
             # Xây dựng Query text từ các text mở
             query_parts = []
-            for field in ["highlights", "drawbacks", "practical_tips", "extracted_spaces", "extracted_times"]:
+            for field in self.text_fields:
                 val = row.get(field, [])
                 if isinstance(val, list):
                     query_parts.extend([str(x).strip() for x in val if str(x).strip()])
@@ -418,14 +423,28 @@ if __name__ == "__main__":
         print(f"Error: {DATA_PATH} not found!")
         exit(1)
 
-    recommender = HybridLocationRecommender(
+    # Nạp toàn bộ data
+    temp_recommender = HybridLocationRecommender()
+    df_all = temp_recommender.load_data(DATA_PATH)
+
+    print("\n\n" + "*" * 60)
+    print("TRƯỜNG HỢP 1: BAO GỒM EXTRACTED_SPACES")
+    print("*" * 60)
+    recommender_with = HybridLocationRecommender(
         embedding_model_name="all-MiniLM-L6-v2",
         pca_components=30,
         n_clusters=8,
+        include_extracted_spaces=True,
     )
-    
-    # Nạp toàn bộ data
-    df_all = recommender.load_data(DATA_PATH)
-    
-    # Chạy Evaluation Hit Rate
-    recommender.evaluate_hit_rate(df_all, ks=[3, 5, 7, 9])
+    recommender_with.evaluate_hit_rate(df_all.copy(), ks=[3, 5, 7, 9])
+
+    print("\n\n" + "*" * 60)
+    print("TRƯỜNG HỢP 2: KHÔNG BAO GỒM EXTRACTED_SPACES")
+    print("*" * 60)
+    recommender_without = HybridLocationRecommender(
+        embedding_model_name="all-MiniLM-L6-v2",
+        pca_components=30,
+        n_clusters=8,
+        include_extracted_spaces=False,
+    )
+    recommender_without.evaluate_hit_rate(df_all.copy(), ks=[3, 5, 7, 9])
